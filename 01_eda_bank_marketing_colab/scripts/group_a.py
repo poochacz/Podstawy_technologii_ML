@@ -14,20 +14,152 @@ NUMERIC_RULES = {
 }
 
 
-def missing_values_report(df: pd.DataFrame) -> pd.DataFrame:
-    rows = []
+def missing_values_analysis(df: pd.DataFrame, target: str = "y", examples: int = 4):
+    """
+    Analiza różnych sposobów reprezentowania brakujących informacji:
+    - NaN: techniczny brak wartości
+    - 'unknown': jawna informacja, że wartość jest nieznana
+    - known: znana wartość
+
+    Dla każdej kolumny pokazuje:
+    1. liczbę NaN i 'unknown',
+    2. przykładowe rekordy,
+    3. udział targetu y='yes' w każdej grupie.
+    """
+
+    summary = []
+
     for col in df.columns:
-        nan = int(df[col].isna().sum())
-        unknown = int(df[col].astype(str).str.lower().eq("unknown").sum())
-        rows.append({
+        if col == target:
+            continue
+
+        nan_mask = df[col].isna()
+
+        if pd.api.types.is_object_dtype(df[col]):
+            unknown_mask = (
+                df[col]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .eq("unknown")
+                & ~nan_mask
+            )
+        else:
+            unknown_mask = pd.Series(False, index=df.index)
+
+        suspicious = nan_mask.sum() + unknown_mask.sum()
+
+        if suspicious == 0:
+            continue
+
+        summary.append({
             "kolumna": col,
-            "NaN": nan,
-            "wartość_'unknown'": unknown,
-            "razem_podejrzane": nan + unknown,
+            "NaN": int(nan_mask.sum()),
+            "unknown": int(unknown_mask.sum()),
+            "łącznie": int(suspicious),
+            "udział_podejrzanych": round(suspicious / len(df), 3)
         })
-    result = pd.DataFrame(rows).sort_values("razem_podejrzane", ascending=False)
-    display(result)
-    return result
+
+    summary_df = pd.DataFrame(summary)
+
+    print("=== 1. Gdzie występują braki lub wartości 'unknown'? ===")
+    if summary_df.empty:
+        print("Nie znaleziono braków ani wartości 'unknown'.")
+        return
+
+    display(
+        summary_df.sort_values("łącznie", ascending=False)
+    )
+
+    for col in summary_df["kolumna"]:
+
+        print("\n" + "=" * 70)
+        print(f"KOLUMNA: {col}")
+        print("=" * 70)
+
+        nan_mask = df[col].isna()
+
+        if pd.api.types.is_object_dtype(df[col]):
+            unknown_mask = (
+                df[col]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .eq("unknown")
+                & ~nan_mask
+            )
+        else:
+            unknown_mask = pd.Series(False, index=df.index)
+
+        known_mask = ~(nan_mask | unknown_mask)
+
+        # ---------------------------------------------------------
+        # Przykładowe rekordy
+        # ---------------------------------------------------------
+
+        if nan_mask.any():
+            print("\nPrzykładowe rekordy z NaN:")
+            display(
+                df.loc[nan_mask]
+                .head(examples)
+            )
+
+        if unknown_mask.any():
+            print("\nPrzykładowe rekordy z 'unknown':")
+            display(
+                df.loc[unknown_mask]
+                .head(examples)
+            )
+
+        # ---------------------------------------------------------
+        # Czy rodzaj braku wiąże się z targetem?
+        # ---------------------------------------------------------
+
+        groups = []
+
+        for name, mask in [
+            ("NaN", nan_mask),
+            ("unknown", unknown_mask),
+            ("znana wartość", known_mask),
+        ]:
+            subset = df.loc[mask]
+
+            if len(subset) == 0:
+                continue
+
+            yes_rate = (
+                subset[target]
+                .eq("yes")
+                .mean()
+            )
+
+            groups.append({
+                "status": name,
+                "liczba_rekordów": len(subset),
+                "udział_y_yes": round(yes_rate, 3)
+            })
+
+        print("\nCzy sposób braku informacji wiąże się z targetem?")
+        display(pd.DataFrame(groups))
+
+        print("\n" + "=" * 70)
+        print("PYTANIA DO DYSKUSJI")
+        print("=" * 70)
+
+        print("""
+                1. Czy NaN i 'unknown' powstały z tego samego powodu?
+
+                2. Czy 'unknown' może być informacją samą w sobie?
+                Np. czy klienci, dla których bank nie zna wykształcenia,
+                zachowują się inaczej niż pozostali?
+
+                3. Czy powinniśmy:
+                - usunąć takie rekordy,
+                - uzupełnić wartość,
+                - czy pozostawić 'unknown' jako osobną kategorię?
+
+                4. Czy sposób powstawania braków może powodować bias?
+                """)
 
 
 def invalid_values_report(df: pd.DataFrame) -> pd.DataFrame:
