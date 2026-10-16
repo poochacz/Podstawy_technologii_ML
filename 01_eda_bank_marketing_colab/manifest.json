@@ -1,0 +1,24 @@
+{
+  "dataset": "UCI Bank Marketing",
+  "source": "https://archive.ics.uci.edu/dataset/222/bank+marketing",
+  "sample_rows": 2000,
+  "columns": [
+    "age",
+    "job",
+    "education",
+    "housing",
+    "contact",
+    "month",
+    "duration",
+    "campaign",
+    "pdays",
+    "y"
+  ],
+  "notebooks": [
+    "START_COLAB.ipynb",
+    "notebooks/00_EDA_wspolne.ipynb",
+    "notebooks/01_GRUPA_A_jakosc_danych.ipynb",
+    "notebooks/02_GRUPA_B_leakage_i_balance.ipynb",
+    "notebooks/03_GRUPA_C_bias_i_reprezentatywnosc.ipynb"
+  ]
+}
