@@ -115,10 +115,29 @@ def _inject_training_issues(sample: pd.DataFrame, random_state: int) -> pd.DataF
         "age": 18,
         "education": 24,
         "housing": 14,
+        "month": 8,
+        "duration": 8,
+        "campaign": 8,
+        "pdays": 8,
     }
+    reserved_indices = {}
     for col, count in missing_plan.items():
         idx = rng.choice(df.index, size=count, replace=False)
         df.loc[idx, col] = np.nan
+        reserved_indices[col] = set(idx)
+
+    unknown_plan = {
+        "month": 8,
+        "duration": 4,
+        "campaign": 4,
+        "pdays": 4,
+    }
+    for col, count in unknown_plan.items():
+        available = df.index[~df.index.isin(reserved_indices[col])]
+        idx = rng.choice(available, size=count, replace=False)
+        df[col] = df[col].astype("object")
+        df.loc[idx, col] = "unknown"
+        reserved_indices[col].update(idx)
 
     # Clearly impossible / invalid numeric values.
     invalid_values = {
@@ -130,7 +149,8 @@ def _inject_training_issues(sample: pd.DataFrame, random_state: int) -> pd.DataF
     used = set()
     for col, values in invalid_values.items():
         for value in values:
-            candidates = [i for i in df.index if i not in used]
+            excluded = used | reserved_indices.get(col, set())
+            candidates = [i for i in df.index if i not in excluded]
             i = int(rng.choice(candidates))
             used.add(i)
             df.loc[i, col] = value
@@ -169,6 +189,8 @@ def prepare_workshop_data(
         "reference_rows": int(len(reference)),
         "workshop_rows": int(len(sample)),
         "selected_columns": SELECTED_COLUMNS,
+        "source_columns": list(full.columns),
+        "excluded_columns": [column for column in full.columns if column not in SELECTED_COLUMNS],
         "target": "y",
         "random_state": random_state,
     }

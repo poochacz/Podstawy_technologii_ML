@@ -26,15 +26,19 @@ def dataset_overview(df: pd.DataFrame) -> None:
 
 def numeric_summary(df: pd.DataFrame) -> None:
     cols = [c for c in NUMERIC_COLUMNS if c in df.columns]
-    display(df[cols].describe().T)
+    numeric = df[cols].apply(pd.to_numeric, errors="coerce")
+    display(numeric.describe().T)
 
 
 def plot_numeric_distributions(df: pd.DataFrame) -> None:
     for col in NUMERIC_COLUMNS:
         if col not in df.columns:
             continue
+        values = pd.to_numeric(df[col], errors="coerce").dropna()
+        if values.empty:
+            continue
         plt.figure(figsize=(7, 3.8))
-        df[col].dropna().plot(kind="hist", bins=30)
+        values.plot(kind="hist", bins=30)
         plt.title(f"Rozkład: {col}")
         plt.xlabel(col)
         plt.ylabel("Liczba obserwacji")
