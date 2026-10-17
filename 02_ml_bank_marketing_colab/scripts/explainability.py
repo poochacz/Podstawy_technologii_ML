@@ -5,7 +5,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
 from sklearn.tree import DecisionTreeClassifier, plot_tree
 
 
@@ -23,38 +22,33 @@ class _NoPreprocessing:
 
 
 def _as_array(transformed) -> np.ndarray:
-    dense = transformed.toarray() if hasattr(transformed, "toarray") else transformed
-    return np.asarray(dense, dtype=float)
+    return np.asarray(transformed, dtype=float)
 
 
 def _parts(model):
-    if isinstance(model, Pipeline):
-        return model.named_steps["preprocessor"], model.named_steps["classifier"]
     return _NoPreprocessing(model.feature_names_in_), model
 
 
-def plot_logistic_coefficients(model: Pipeline, top_n: int = 12) -> pd.DataFrame:
+def plot_logistic_coefficients(model: LogisticRegression, top_n: int = 12) -> pd.DataFrame:
     """Plot the strongest logistic-regression coefficients for class yes."""
-    preprocessor, classifier = _parts(model)
-    if not isinstance(classifier, LogisticRegression):
+    if not isinstance(model, LogisticRegression):
         raise TypeError("Ta wizualizacja wymaga Logistic Regression.")
 
-    feature_names = preprocessor.get_feature_names_out()
-    positive_class = list(classifier.classes_).index("yes")
-    coefficients = classifier.coef_[0] if classifier.coef_.shape[0] == 1 else classifier.coef_[positive_class]
-    result = pd.DataFrame({"cecha": feature_names, "współczynnik": coefficients})
+    # coef_ dotyczy klasy model.classes_[1], czyli "yes"
+    result = pd.DataFrame({"cecha": model.feature_names_in_, "współczynnik": model.coef_[0]})
     result = result.reindex(result["współczynnik"].abs().sort_values().tail(top_n).index)
-    colors = ["#c0392b" if value < 0 else "#168c78" for value in result["współczynnik"]]
+    colors = ["#2a78d6" if value < 0 else "#eb6834" for value in result["współczynnik"]]
 
     _, axis = plt.subplots(figsize=(9, max(4, 0.38 * len(result))))
     axis.barh(result["cecha"], result["współczynnik"], color=colors)
-    axis.axvline(0, color="#444444", linewidth=0.8)
-    axis.set_title("Logistic Regression: współczynniki dla lokaty (yes)")
-    axis.set_xlabel("Ujemna wartość wiąże się z niższym, dodatnia z wyższym wynikiem yes")
-    axis.set_ylabel("Cecha po zakodowaniu")
+    axis.axvline(0, color="#52514e", linewidth=0.8)
+    axis.set_title(f"Regresja logistyczna: {top_n} cech o największym wpływie na szansę lokaty")
+    axis.set_xlabel("← zmniejsza szansę na „yes”          zwiększa szansę na „yes” →")
+    for side in ("top", "right"):
+        axis.spines[side].set_visible(False)
     plt.tight_layout()
     plt.show()
-    return result.sort_values("współczynnik", key=lambda values: values.abs(), ascending=False)
+    return result.sort_values("współczynnik", key=lambda values: values.abs(), ascending=False).reset_index(drop=True).round(3)
 
 
 def _plot_tree_estimator(
@@ -82,7 +76,7 @@ def _plot_tree_estimator(
     plt.show()
 
 
-def plot_decision_tree(model: Pipeline | DecisionTreeClassifier, max_depth: int = 3) -> None:
+def plot_decision_tree(model: DecisionTreeClassifier, max_depth: int = 3) -> None:
     """Plot the fitted decision tree, limiting depth for readability."""
     preprocessor, classifier = _parts(model)
     if not isinstance(classifier, DecisionTreeClassifier):
@@ -96,7 +90,7 @@ def plot_decision_tree(model: Pipeline | DecisionTreeClassifier, max_depth: int 
 
 
 def plot_random_forest_tree(
-    model: Pipeline,
+    model: RandomForestClassifier,
     tree_index: int = 0,
     max_depth: int = 3,
 ) -> None:
@@ -115,7 +109,7 @@ def plot_random_forest_tree(
     )
 
 
-def forest_first_questions(model: Pipeline | RandomForestClassifier) -> pd.DataFrame:
+def forest_first_questions(model: RandomForestClassifier) -> pd.DataFrame:
     """Count which feature each tree of a fitted random forest asks about first."""
     preprocessor, classifier = _parts(model)
     if not isinstance(classifier, RandomForestClassifier):
@@ -126,7 +120,7 @@ def forest_first_questions(model: Pipeline | RandomForestClassifier) -> pd.DataF
     return pd.DataFrame({"pierwsze pytanie drzewa": counts.index, "liczba drzew": counts.values})
 
 
-def plot_forest_votes(model: Pipeline | RandomForestClassifier, row: pd.Series | pd.DataFrame) -> None:
+def plot_forest_votes(model: RandomForestClassifier, row: pd.Series | pd.DataFrame) -> None:
     """Plot how sure each tree of a fitted random forest is that one client answers yes."""
     preprocessor, classifier = _parts(model)
     if not isinstance(classifier, RandomForestClassifier):

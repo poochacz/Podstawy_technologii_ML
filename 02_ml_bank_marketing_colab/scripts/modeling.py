@@ -1,31 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, recall_score
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score
 
-from scripts.data_setup import DEFAULT_DATA_DIR, MODEL_FEATURES
+from scripts.data_setup import MODEL_FEATURES
 
 TARGET = "y"
 CATEGORICAL_FEATURES = {"job", "education", "housing", "contact", "month"}
-FEATURE_SETS = {
-    "basic": ("age", "job", "education"),
-    "standard": MODEL_FEATURES,
-    "degraded": MODEL_FEATURES,
-}
-MODEL_NAMES = ("logistic_regression", "decision_tree", "random_forest")
-DEFAULT_TRAIN_SIZES = (100, 300, 800, 1500)
 
 
 def preprocess_data(data: pd.DataFrame) -> pd.DataFrame:
@@ -44,300 +27,6 @@ def preprocess_data(data: pd.DataFrame) -> pd.DataFrame:
     # Kolumny tekstowe zamieniamy na kolumny 0/1 (one-hot encoding).
     categorical = [column for column in MODEL_FEATURES if column in CATEGORICAL_FEATURES]
     return pd.get_dummies(prepared, columns=categorical, dtype="int64")
-
-
-def make_fixed_split(
-    data: pd.DataFrame,
-    test_size: float = 0.2,
-    random_state: int = 42,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    """Create the shared stratified train/test split used by every experiment."""
-    if TARGET not in data.columns:
-        raise ValueError("Brakuje kolumny wynikowej 'y'.")
-    if "duration" in data.columns:
-        raise ValueError("'duration' musi być wykluczone: jest niedostępne przed rozmową.")
-    if not 0 < test_size < 1:
-        raise ValueError("test_size musi być pomiędzy 0 i 1.")
-
-    valid = data.loc[data[TARGET].isin(["no", "yes"])].copy()
-    features = [column for column in valid.columns if column != TARGET]
-    X_train, X_test, y_train, y_test = train_test_split(
-        valid[features],
-        valid[TARGET],
-        test_size=test_size,
-        random_state=random_state,
-        stratify=valid[TARGET],
-    )
-    return (
-        X_train.reset_index(drop=True),
-        X_test.reset_index(drop=True),
-        y_train.reset_index(drop=True),
-        y_test.reset_index(drop=True),
-    )
-
-
-def _nested_training_order(y_train: pd.Series, random_state: int) -> np.ndarray:
-    """Return one class-balanced random order whose prefixes are nested samples."""
-    labels = y_train.to_numpy()
-    classes = sorted(pd.unique(labels).tolist())
-    proportions = {label: float(np.mean(labels == label)) for label in classes}
-    rng = np.random.default_rng(random_state)
-    queues = {
-        label: rng.permutation(np.flatnonzero(labels == label)).tolist()
-        for label in classes
-    }
-    positions = {label: 0 for label in classes}
-    observed = {label: 0 for label in classes}
-    order = []
-
-    for sample_size in range(1, len(labels) + 1):
-        available = [label for label in classes if positions[label] < len(queues[label])]
-        next_label = max(
-            available,
-            key=lambda label: sample_size * proportions[label] - observed[label],
-        )
-        order.append(queues[next_label][positions[next_label]])
-        positions[next_label] += 1
-        observed[next_label] += 1
-
-    return np.asarray(order, dtype=int)
-
-
-def _apply_training_degradation(
-    X: pd.DataFrame,
-    rate: float,
-    random_state: int,
-) -> pd.DataFrame:
-    """Hide a fraction of training feature cells; the test set is never changed."""
-    if not 0 <= rate < 1:
-        raise ValueError("degradation_rate musi być w przedziale [0, 1).")
-    if rate == 0 or X.empty:
-        return X.copy()
-
-    result = X.copy()
-    rng = np.random.default_rng(random_state)
-    missing_mask = rng.random(result.shape) < rate
-    for index, column in enumerate(result.columns):
-        result.loc[missing_mask[:, index], column] = np.nan
-    return result
-
-
-def _estimator(model_name: str, random_state: int):
-    if model_name == "logistic_regression":
-        return LogisticRegression(max_iter=1000, random_state=random_state)
-    if model_name == "decision_tree":
-        return DecisionTreeClassifier(
-            max_depth=8,
-            min_samples_leaf=8,
-            random_state=random_state,
-        )
-    if model_name == "random_forest":
-        return RandomForestClassifier(
-            n_estimators=100,
-            max_depth=6,
-            min_samples_leaf=5,
-            random_state=random_state,
-            n_jobs=-1,
-        )
-    raise ValueError(f"Nieznany model '{model_name}'. Wybierz: {MODEL_NAMES}")
-
-
-def build_pipeline(
-    model_name: str,
-    feature_columns: tuple[str, ...] | list[str],
-    random_state: int = 42,
-) -> Pipeline:
-    """Build a leakage-safe preprocessing and model pipeline."""
-    feature_columns = list(feature_columns)
-    # Kolumny spoza CATEGORICAL_FEATURES (także 0/1 z preprocess_data) traktujemy jako liczbowe.
-    numeric = [column for column in feature_columns if column not in CATEGORICAL_FEATURES]
-    categorical = [column for column in feature_columns if column in CATEGORICAL_FEATURES]
-
-    transformers = []
-    if numeric:
-        numeric_steps = [("imputer", SimpleImputer(strategy="median"))]
-        if model_name == "logistic_regression":
-            numeric_steps.append(("scaler", StandardScaler()))
-        transformers.append(("numeric", Pipeline(numeric_steps), numeric))
-    if categorical:
-        categorical_pipeline = Pipeline([
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ])
-        transformers.append(("categorical", categorical_pipeline, categorical))
-
-    preprocessor = ColumnTransformer(
-        transformers=transformers,
-        remainder="drop",
-        verbose_feature_names_out=False,
-    )
-    return Pipeline([
-        ("preprocessor", preprocessor),
-        ("classifier", _estimator(model_name, random_state)),
-    ])
-
-
-def _score(model: Pipeline, X_test: pd.DataFrame, y_test: pd.Series) -> dict[str, float]:
-    predictions = model.predict(X_test)
-    return {
-        "accuracy": float(accuracy_score(y_test, predictions)),
-        "recall_yes": float(recall_score(y_test, predictions, pos_label="yes", zero_division=0)),
-    }
-
-
-def always_no_baseline(
-    data: pd.DataFrame,
-    test_size: float = 0.2,
-    split_seed: int = 42,
-) -> dict[str, float | int | str]:
-    """Score a constant 'no' prediction on the fixed stratified test set."""
-    _, X_test, _, y_test = make_fixed_split(data, test_size, split_seed)
-    predictions = np.repeat("no", len(y_test))
-    return {
-        "model": "zawsze brak lokaty",
-        "test_rows": len(X_test),
-        "accuracy": float(accuracy_score(y_test, predictions)),
-        "recall_yes": float(recall_score(y_test, predictions, pos_label="yes", zero_division=0)),
-    }
-
-
-def run_experiments(
-    data: pd.DataFrame,
-    model_name: str,
-    train_sizes: tuple[int, ...] = DEFAULT_TRAIN_SIZES,
-    feature_sets: tuple[str, ...] = ("basic", "standard", "degraded"),
-    repeats: int = 3,
-    degradation_rate: float = 0.15,
-    test_size: float = 0.2,
-    split_seed: int = 42,
-) -> pd.DataFrame:
-    """Evaluate nested training samples on one immutable test set."""
-    if repeats < 1:
-        raise ValueError("repeats musi wynosić co najmniej 1.")
-    if not train_sizes or any(size < 1 for size in train_sizes):
-        raise ValueError("train_sizes musi zawierać dodatnie liczby.")
-    if tuple(sorted(set(train_sizes))) != train_sizes:
-        raise ValueError("train_sizes podaj rosnąco, bez duplikatów.")
-    unknown_sets = set(feature_sets) - set(FEATURE_SETS)
-    if unknown_sets:
-        raise ValueError(f"Nieznane zestawy cech: {sorted(unknown_sets)}")
-
-    X_train, X_test, y_train, y_test = make_fixed_split(data, test_size, split_seed)
-    if max(train_sizes) > len(X_train):
-        raise ValueError(
-            f"Największy trening ma {max(train_sizes)} rekordów, "
-            f"ale po podziale dostępnych jest {len(X_train)}."
-        )
-
-    rows = []
-    for feature_set in feature_sets:
-        feature_columns = list(FEATURE_SETS[feature_set])
-        absent = set(feature_columns) - set(X_train.columns)
-        if absent:
-            raise ValueError(f"Brakuje cech {sorted(absent)} w danych wejściowych.")
-
-        for repeat in range(repeats):
-            repeat_seed = split_seed + 1009 * repeat
-            order = _nested_training_order(y_train, repeat_seed)
-            for train_size in train_sizes:
-                positions = order[:train_size]
-                X_subset = X_train.iloc[positions][feature_columns].copy()
-                y_subset = y_train.iloc[positions]
-                if feature_set == "degraded":
-                    X_subset = _apply_training_degradation(
-                        X_subset,
-                        degradation_rate,
-                        random_state=repeat_seed + train_size,
-                    )
-
-                model = build_pipeline(model_name, feature_columns, random_state=repeat_seed)
-                model.fit(X_subset, y_subset)
-                scores = _score(model, X_test[feature_columns], y_test)
-                rows.append({
-                    "model": model_name,
-                    "feature_set": feature_set,
-                    "train_size": train_size,
-                    "repeat": repeat + 1,
-                    "yes_in_train": int(y_subset.eq("yes").sum()),
-                    **scores,
-                })
-
-    return pd.DataFrame(rows)
-
-
-def summarize_experiments(results: pd.DataFrame) -> pd.DataFrame:
-    """Summarize average scores and variation across repeated train samples."""
-    if results.empty:
-        return results.copy()
-    summary = results.groupby(
-        ["model", "feature_set", "train_size"],
-        as_index=False,
-    ).agg(
-        accuracy_mean=("accuracy", "mean"),
-        accuracy_std=("accuracy", "std"),
-        recall_yes_mean=("recall_yes", "mean"),
-        recall_yes_std=("recall_yes", "std"),
-    )
-    return summary.fillna(0).round(3)
-
-
-def plot_metric(summary: pd.DataFrame, metric: str = "recall_yes") -> None:
-    """Plot mean score by training size, with run-to-run variation bars."""
-    if metric not in {"accuracy", "recall_yes"}:
-        raise ValueError("metric wybierz jako 'accuracy' albo 'recall_yes'.")
-    mean_column = f"{metric}_mean"
-    std_column = f"{metric}_std"
-    if mean_column not in summary:
-        raise ValueError("Uruchom najpierw eksperymenty i summarize_experiments().")
-
-    _, axis = plt.subplots(figsize=(8, 4.5))
-    for feature_set, group in summary.groupby("feature_set", sort=False):
-        group = group.sort_values("train_size")
-        axis.errorbar(
-            group["train_size"],
-            group[mean_column],
-            yerr=group[std_column],
-            marker="o",
-            capsize=3,
-            label=feature_set,
-        )
-    axis.set_title(f"{metric}: wpływ wielkości i jakości danych")
-    axis.set_xlabel("Liczba rekordów treningowych")
-    axis.set_ylabel(metric)
-    axis.legend(title="Zestaw danych")
-    axis.grid(alpha=0.25)
-    plt.tight_layout()
-    plt.show()
-
-
-def fit_explanation_model(
-    data: pd.DataFrame,
-    model_name: str,
-    feature_set: str = "standard",
-    train_size: int = 1500,
-    split_seed: int = 42,
-    degradation_rate: float = 0.15,
-) -> tuple[Pipeline, pd.DataFrame, pd.Series]:
-    """Fit one reproducible model on the shared split for interpretation."""
-    if feature_set not in FEATURE_SETS:
-        raise ValueError(f"Nieznany zestaw cech '{feature_set}'.")
-    X_train, X_test, y_train, y_test = make_fixed_split(data, random_state=split_seed)
-    if train_size > len(X_train):
-        raise ValueError(f"Dostępnych jest tylko {len(X_train)} wierszy treningowych.")
-
-    feature_columns = list(FEATURE_SETS[feature_set])
-    order = _nested_training_order(y_train, split_seed)
-    positions = order[:train_size]
-    X_subset = X_train.iloc[positions][feature_columns].copy()
-    y_subset = y_train.iloc[positions]
-    if feature_set == "degraded":
-        X_subset = _apply_training_degradation(X_subset, degradation_rate, split_seed + train_size)
-
-    model = build_pipeline(model_name, feature_columns, random_state=split_seed)
-    model.fit(X_subset, y_subset)
-    return model, X_test[feature_columns], y_test
-
-
 
 
 def drop_features(X: pd.DataFrame, features: list[str] | tuple[str, ...]) -> pd.DataFrame:
@@ -422,3 +111,138 @@ def plot_learning_curve(results: pd.DataFrame) -> pd.DataFrame:
     table = summary.copy()
     table.columns = [f"{metric}_{stat}" for metric, stat in table.columns]
     return table.round(3)
+
+
+def _pl(value: float, fmt: str = ".2f") -> str:
+    """Format a number with a Polish decimal comma."""
+    return format(value, fmt).replace(".", ",")
+
+
+def _style_axis(axis) -> None:
+    axis.grid(axis="y", alpha=0.25)
+    for side in ("top", "right"):
+        axis.spines[side].set_visible(False)
+
+
+def plot_regression_predictions(linear_predictions, logistic_probabilities) -> None:
+    """Compare linear-regression outputs (any number) with logistic-regression probabilities (0-1)."""
+    linear_predictions = np.asarray(linear_predictions)
+    logistic_probabilities = np.asarray(logistic_probabilities)
+    outside = np.mean((linear_predictions < 0) | (linear_predictions > 1))
+    low = min(-0.2, linear_predictions.min() - 0.05)
+    high = max(1.2, linear_predictions.max() + 0.05)
+    bins = np.linspace(low, high, 50)
+
+    _, axes = plt.subplots(1, 2, figsize=(12, 4), sharex=True)
+    panels = (
+        (axes[0], linear_predictions, f"Regresja liniowa: {_pl(outside, '.1%')} wyników poza przedziałem 0–1"),
+        (axes[1], logistic_probabilities, "Regresja logistyczna: wszystkie wyniki w przedziale 0–1"),
+    )
+    for axis, values, title in panels:
+        axis.axvspan(low, 0, color="#52514e", alpha=0.12, linewidth=0)
+        axis.axvspan(1, high, color="#52514e", alpha=0.12, linewidth=0)
+        axis.hist(values, bins=bins, color="#2a78d6", edgecolor="white", linewidth=0.5)
+        axis.set_title(title)
+        axis.set_xlabel("Przewidywana „szansa” na lokatę")
+        _style_axis(axis)
+    axes[0].set_ylabel("Liczba klientów testowych")
+    plt.tight_layout(rect=(0, 0.06, 1, 1))
+    plt.figtext(0.5, 0.01, "Szare pola: wartości poniżej 0 i powyżej 1 – niemożliwe jako prawdopodobieństwo", ha="center", color="#52514e")
+    plt.show()
+
+
+def threshold_metrics(y_true: pd.Series, probabilities, min_predicted_yes: int = 30) -> pd.DataFrame:
+    """Score yes/no predictions for each threshold; precision is hidden when too few clients get yes."""
+    is_yes = np.asarray(y_true) == "yes"
+    thresholds = np.round(np.arange(0.02, 0.96, 0.01), 2)
+    said_yes = np.asarray(probabilities)[None, :] >= thresholds[:, None]
+    true_pos = (said_yes & is_yes).sum(axis=1)
+    true_neg = (~said_yes & ~is_yes).sum(axis=1)
+    predicted_yes = said_yes.sum(axis=1)
+    recall = true_pos / is_yes.sum()
+    specificity = true_neg / (~is_yes).sum()
+    precision = np.where(predicted_yes >= min_predicted_yes, true_pos / np.maximum(predicted_yes, 1), np.nan)
+    return pd.DataFrame({
+        "próg": thresholds,
+        "accuracy": (true_pos + true_neg) / len(is_yes),
+        "balanced_accuracy": (recall + specificity) / 2,
+        "recall_yes": recall,
+        "precision_yes": precision,
+    })
+
+
+def plot_threshold_metrics(y_true: pd.Series, probabilities) -> None:
+    """Plot how accuracy, balanced accuracy, recall and precision change with the threshold."""
+    metrics = threshold_metrics(y_true, probabilities)
+    series = {
+        "accuracy": ("Accuracy", "#2a78d6"),
+        "balanced_accuracy": ("Balanced accuracy", "#eb6834"),
+        "recall_yes": ("Recall (ilu chętnych znaleźliśmy)", "#1baf7a"),
+        "precision_yes": ("Precision (ilu z wskazanych to chętni)", "#eda100"),
+    }
+
+    _, axis = plt.subplots(figsize=(10, 5))
+    for column, (label, color) in series.items():
+        axis.plot(metrics["próg"], metrics[column], color=color, linewidth=2, label=label)
+    axis.axvline(0.5, color="#52514e", linewidth=1, linestyle="--")
+    axis.text(0.505, 0.02, "domyślny próg 0,5", color="#52514e", fontsize=9)
+    axis.set_ylim(0, 1)
+    axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"{value:.0%}"))
+    axis.set_xlabel("Próg decyzyjny: od jakiej szansy model mówi „yes”")
+    axis.set_ylabel("Wynik na zbiorze testowym")
+    axis.set_title("Jak próg decyzyjny zmienia wyniki modelu")
+    _style_axis(axis)
+    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2, frameon=False)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_profit_by_threshold(
+    y_true: pd.Series,
+    probabilities,
+    call_cost: float,
+    deposit_profit: float,
+) -> pd.DataFrame:
+    """Plot bank profit for each threshold: every call costs money, every deposit earns money."""
+    is_yes = np.asarray(y_true) == "yes"
+    probabilities = np.asarray(probabilities)
+    thresholds = np.round(np.arange(0.01, 0.96, 0.01), 2)
+
+    def outcome(called: np.ndarray) -> dict[str, float]:
+        calls, deposits = int(called.sum()), int((called & is_yes).sum())
+        return {"telefony": calls, "lokaty": deposits, "zysk [zł]": deposits * deposit_profit - calls * call_cost}
+
+    profits = np.array([outcome(probabilities >= threshold)["zysk [zł]"] for threshold in thresholds])
+    best = int(np.argmax(profits))
+    call_everyone = outcome(np.ones_like(is_yes))["zysk [zł]"]
+
+    _, axis = plt.subplots(figsize=(10, 5))
+    axis.plot(thresholds, profits, color="#2a78d6", linewidth=2, label="zysk przy danym progu")
+    axis.axhline(call_everyone, color="#eb6834", linewidth=1.5, linestyle="--", label="dzwonimy do wszystkich")
+    axis.axhline(0, color="#52514e", linewidth=0.8)
+    axis.axvline(0.5, color="#52514e", linewidth=1, linestyle=":", label="domyślny próg 0,5")
+    axis.plot(thresholds[best], profits[best], "o", color="#0b0b0b", markersize=8)
+    axis.annotate(
+        f"najlepszy próg {_pl(thresholds[best])}\nzysk {profits[best]:,.0f} zł".replace(",", " "),
+        (thresholds[best], profits[best]),
+        xytext=(25, -10),
+        textcoords="offset points",
+        va="top",
+    )
+    axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"{value:,.0f} zł".replace(",", " ")))
+    axis.set_xlabel("Próg decyzyjny: dzwonimy, gdy szansa na lokatę jest co najmniej taka")
+    axis.set_ylabel("Zysk banku na klientach testowych")
+    axis.set_title(f"Telefon kosztuje {call_cost:g} zł, lokata przynosi {deposit_profit:g} zł")
+    _style_axis(axis)
+    axis.legend(loc="upper right", frameon=False)
+    plt.tight_layout()
+    plt.show()
+
+    return pd.DataFrame(
+        [
+            outcome(np.ones_like(is_yes)),
+            outcome(probabilities >= 0.5),
+            outcome(probabilities >= thresholds[best]),
+        ],
+        index=["dzwonimy do wszystkich", "próg 0,5", f"najlepszy próg {_pl(thresholds[best])}"],
+    )
