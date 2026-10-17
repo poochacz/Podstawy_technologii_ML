@@ -17,6 +17,7 @@ UCI_URLS = (
     "https://archive.ics.uci.edu/static/public/222/bank+marketing.zip",
 )
 SOURCE_CSV = Path("raw") / "bank-additional" / "bank-additional-full.csv"
+BUNDLED_CSV = PROJECT_DIR / "source_data" / "bank-additional-full.csv"
 SAMPLE_CSV = "bank_modeling_{size}.csv"
 METADATA_JSON = "modeling_metadata_{size}.json"
 SOURCE_COLUMNS = (
@@ -56,9 +57,11 @@ def download_source(data_dir: str | Path = DEFAULT_DATA_DIR, force: bool = False
     """Download the UCI archive once and return its full table and column names."""
     data_dir = Path(data_dir)
     source_path = data_dir / SOURCE_CSV
-    if source_path.exists() and not force:
-        frame = pd.read_csv(source_path, sep=";")
-        return frame, frame.columns.tolist()
+    # Kopia z repozytorium: notatniki działają nawet wtedy, gdy UCI jest niedostępne.
+    for local_path in (source_path, BUNDLED_CSV):
+        if local_path.exists() and not force:
+            frame = pd.read_csv(local_path, sep=";")
+            return frame, frame.columns.tolist()
 
     source_path.parent.mkdir(parents=True, exist_ok=True)
     archive_path = data_dir / "raw" / "bank-additional.zip"
