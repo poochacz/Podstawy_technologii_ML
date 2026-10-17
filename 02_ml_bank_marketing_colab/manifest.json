@@ -1,0 +1,14 @@
+{
+  "name": "Warsztat ML - UCI Bank Marketing",
+  "dataset": "UCI Bank Marketing",
+  "target": "y",
+  "target_positive": "yes",
+  "sample_rows": 2000,
+  "features_excluded": ["duration"],
+  "models": ["logistic_regression", "decision_tree", "random_forest"],
+  "notebooks": [
+    "notebooks/01_GRUPA_A_logistic_regression.ipynb",
+    "notebooks/02_GRUPA_B_decision_tree.ipynb",
+    "notebooks/03_GRUPA_C_random_forest.ipynb"
+  ]
+}
